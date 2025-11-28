@@ -1,0 +1,585 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>System Architecture Explorer</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+        
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #fdfbf7; /* Warm neutral background */
+            color: #1e293b;
+        }
+
+        /* Custom Scrollbar */
+        ::-webkit-scrollbar {
+            width: 8px;
+            height: 8px;
+        }
+        ::-webkit-scrollbar-track {
+            background: #f1f5f9; 
+        }
+        ::-webkit-scrollbar-thumb {
+            background: #cbd5e1; 
+            border-radius: 4px;
+        }
+        ::-webkit-scrollbar-thumb:hover {
+            background: #94a3b8; 
+        }
+
+        /* Diagram Node Styles */
+        .arch-node {
+            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+            cursor: pointer;
+            border-left: 4px solid transparent;
+        }
+        .arch-node:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05);
+        }
+        .arch-node.active {
+            border-left-color: #3b82f6;
+            background-color: #ffffff;
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
+            ring: 2px solid #3b82f6;
+        }
+
+        /* Flow Animation Classes */
+        .flow-active {
+            animation: pulse-border 1.5s infinite;
+            border-color: #10b981 !important; /* Green for active flow */
+            background-color: #ecfdf5 !important;
+        }
+
+        @keyframes pulse-border {
+            0% { box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.4); }
+            70% { box-shadow: 0 0 0 6px rgba(16, 185, 129, 0); }
+            100% { box-shadow: 0 0 0 0 rgba(16, 185, 129, 0); }
+        }
+
+        /* Chart Container */
+        .chart-container {
+            position: relative;
+            width: 100%;
+            max-width: 500px;
+            margin: 0 auto;
+            height: 300px;
+        }
+
+        /* Utility for connecting lines simulation */
+        .connector-line {
+            height: 2px;
+            background-color: #cbd5e1;
+            position: absolute;
+            z-index: 0;
+        }
+    </style>
+    <!-- Chosen Palette: Warm Neutral Foundation (#fdfbf7) with Slate Text (#1e293b). Accents: Blue (#3b82f6) for interaction, Emerald (#10b981) for data flow, Amber (#f59e0b) for key highlights. -->
+    
+    <!-- Application Structure Plan:
+         1. Header & Context: Brief intro to the system.
+         2. Main Interactive Diagram (The "Map"): A grid-based layout representing the architectural layers (Client, API, Services, Data). This replaces the static Mermaid diagram. Users click nodes to see details.
+         3. Dynamic Detail Panel: A sticky sidebar (on desktop) or bottom section that reveals specifics about the selected component (Tech stack, responsibility, connections).
+         4. Simulation Control: Buttons to trigger "Data Flow" animations, helping users visualize how data moves (e.g., "Simulate Ingestion").
+         5. Analytics Dashboard: A section with Chart.js visualizations summarizing the tech stack distribution and system complexity.
+         Rationale: This structure breaks down a complex diagram into interactive parts, allowing users to focus on specific layers without losing the "big picture" context.
+    -->
+    
+    <!-- Visualization & Content Choices:
+         1. Arch Diagram -> Interactive Grid -> Interaction: Click/Hover -> Justification: Replaces static flowchart with explorable UI blocks. NO SVG/Mermaid.
+         2. Component Detail -> Dynamic Text Card -> Interaction: Update on Node Click -> Justification: Contextual learning; keeps UI clean.
+         3. Tech Stack Stats -> Doughnut Chart (Chart.js) -> Interaction: Hover for values -> Justification: Quick visual summary of technologies used.
+         4. Data Flow -> CSS Animation on Nodes -> Interaction: Button Click -> Justification: Demonstrates the "Liveness" of the system.
+    -->
+    
+    <!-- CONFIRMATION: NO SVG graphics used. NO Mermaid JS used. -->
+</head>
+<body class="flex flex-col min-h-screen text-slate-800">
+
+    <!-- Navigation / Header -->
+    <header class="bg-white border-b border-slate-200 sticky top-0 z-50">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
+            <div class="flex items-center gap-2">
+                <span class="text-2xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-slate-700 to-slate-900">ArchViz</span>
+                <span class="text-xs font-medium px-2 py-1 bg-slate-100 rounded-full text-slate-600">v2.0</span>
+            </div>
+            <nav class="hidden md:flex space-x-6 text-sm font-medium text-slate-500">
+                <button onclick="scrollToSection('diagram-section')" class="hover:text-slate-900 transition-colors">Architecture Map</button>
+                <button onclick="scrollToSection('flow-section')" class="hover:text-slate-900 transition-colors">Data Flows</button>
+                <button onclick="scrollToSection('stack-section')" class="hover:text-slate-900 transition-colors">Tech Stack</button>
+            </nav>
+        </div>
+    </header>
+
+    <main class="flex-grow w-full max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 space-y-12">
+
+        <!-- Intro Section -->
+        <section class="max-w-3xl">
+            <h1 class="text-3xl font-bold text-slate-900 mb-4">Financial Intelligence Platform Architecture</h1>
+            <p class="text-lg text-slate-600 leading-relaxed">
+                Explore the modular architecture of the financial data processing system. 
+                This platform ingests transaction data from various sources, processes it using LLMs, and provides 
+                actionable insights via a Next.js web application and Android companion.
+            </p>
+            <div class="mt-4 flex gap-4 text-sm">
+                <div class="flex items-center gap-1"><span class="w-3 h-3 rounded-full bg-blue-500"></span> Client Layer</div>
+                <div class="flex items-center gap-1"><span class="w-3 h-3 rounded-full bg-purple-500"></span> API Gateway</div>
+                <div class="flex items-center gap-1"><span class="w-3 h-3 rounded-full bg-amber-500"></span> App Services</div>
+                <div class="flex items-center gap-1"><span class="w-3 h-3 rounded-full bg-slate-500"></span> Infrastructure</div>
+            </div>
+        </section>
+
+        <!-- Main Interaction Area: Diagram & Details -->
+        <div id="diagram-section" class="grid grid-cols-1 lg:grid-cols-3 gap-8">
+            
+            <!-- Interactive Architecture Map (Left 2 Columns) -->
+            <div class="lg:col-span-2 space-y-6 relative">
+                <div class="bg-white rounded-xl shadow-sm border border-slate-200 p-6 relative overflow-hidden">
+                    
+                    <!-- Flow Simulation Controls -->
+                    <div class="absolute top-4 right-4 z-10 flex gap-2">
+                        <button onclick="simulateFlow('ingest')" class="px-3 py-1.5 bg-emerald-50 text-emerald-700 text-xs font-medium rounded hover:bg-emerald-100 transition-colors border border-emerald-200">
+                            ▶ Simulate Ingestion
+                        </button>
+                        <button onclick="simulateFlow('agent')" class="px-3 py-1.5 bg-blue-50 text-blue-700 text-xs font-medium rounded hover:bg-blue-100 transition-colors border border-blue-200">
+                            ▶ Simulate Agent Query
+                        </button>
+                    </div>
+
+                    <h2 class="text-sm font-semibold text-slate-400 uppercase tracking-wider mb-6">System Components Map</h2>
+
+                    <!-- Grid Layout for Architecture -->
+                    <div class="grid grid-cols-1 md:grid-cols-4 gap-4">
+                        
+                        <!-- UI Layer -->
+                        <div class="md:col-span-1 space-y-4">
+                            <div class="text-xs font-bold text-slate-400 text-center uppercase mb-2">Client Layer</div>
+                            <div onclick="selectNode('web')" id="node-web" class="arch-node p-4 bg-slate-50 rounded-lg border border-slate-200 group">
+                                <div class="font-semibold text-slate-800 text-sm">Next.js Web App</div>
+                                <div class="text-xs text-slate-500 mt-1">Dashboards, Chat</div>
+                            </div>
+                            <div onclick="selectNode('android')" id="node-android" class="arch-node p-4 bg-slate-50 rounded-lg border border-slate-200">
+                                <div class="font-semibold text-slate-800 text-sm">Android App</div>
+                                <div class="text-xs text-slate-500 mt-1">Notification Listener</div>
+                            </div>
+                            <div onclick="selectNode('minio_ui')" id="node-minio_ui" class="arch-node p-4 bg-slate-50 rounded-lg border border-slate-200">
+                                <div class="font-semibold text-slate-800 text-sm">MinIO Console</div>
+                                <div class="text-xs text-slate-500 mt-1">Port 9001</div>
+                            </div>
+                        </div>
+
+                        <!-- Arrows Column 1 -->
+                        <div class="hidden md:flex flex-col justify-center items-center text-slate-300">
+                            <div class="text-2xl">→</div>
+                            <div class="h-12 w-0.5 bg-slate-200 my-2"></div>
+                            <div class="text-2xl">→</div>
+                        </div>
+
+                        <!-- API & Services Layer (Grouped) -->
+                        <div class="md:col-span-2 space-y-6">
+                            
+                            <!-- API Gateway -->
+                            <div class="border-b border-dashed border-slate-200 pb-4 mb-4">
+                                <div class="text-xs font-bold text-slate-400 text-center uppercase mb-2">API Gateway (FastAPI)</div>
+                                <div class="grid grid-cols-2 gap-2">
+                                    <div onclick="selectNode('api_tx')" id="node-api_tx" class="arch-node p-2 bg-purple-50 border border-purple-100 rounded text-center">
+                                        <div class="text-xs font-semibold text-purple-800">Transcations API</div>
+                                    </div>
+                                    <div onclick="selectNode('api_agent')" id="node-api_agent" class="arch-node p-2 bg-purple-50 border border-purple-100 rounded text-center">
+                                        <div class="text-xs font-semibold text-purple-800">Agent API</div>
+                                    </div>
+                                    <div onclick="selectNode('api_ingest')" id="node-api_ingest" class="arch-node p-2 bg-purple-50 border border-purple-100 rounded text-center col-span-2">
+                                        <div class="text-xs font-semibold text-purple-800">Ingestion/Gmail API</div>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <!-- Backend Services -->
+                            <div>
+                                <div class="text-xs font-bold text-slate-400 text-center uppercase mb-2">Domain Services</div>
+                                <div class="grid grid-cols-1 gap-3">
+                                    <div onclick="selectNode('svc_ingest')" id="node-svc_ingest" class="arch-node p-3 bg-amber-50 border border-amber-100 rounded-lg flex justify-between items-center">
+                                        <span class="text-sm font-semibold text-amber-900">Ingestion Service</span>
+                                        <span class="text-xs text-amber-600">Gmail • Uploads</span>
+                                    </div>
+                                    
+                                    <div onclick="selectNode('svc_extract')" id="node-svc_extract" class="arch-node p-3 bg-amber-50 border border-amber-100 rounded-lg flex justify-between items-center ml-4 border-l-4 border-l-amber-300">
+                                        <span class="text-sm font-semibold text-amber-900">Extraction (LLM)</span>
+                                        <span class="text-xs text-amber-600">Validate • Normalize</span>
+                                    </div>
+
+                                    <div onclick="selectNode('svc_agent')" id="node-svc_agent" class="arch-node p-3 bg-amber-50 border border-amber-100 rounded-lg flex justify-between items-center">
+                                        <span class="text-sm font-semibold text-amber-900">Agent Orchestrator</span>
+                                        <span class="text-xs text-amber-600">LangGraph</span>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                    </div>
+
+                    <!-- Infrastructure Row (Bottom) -->
+                    <div class="mt-8 pt-6 border-t border-slate-200">
+                        <div class="text-xs font-bold text-slate-400 text-center uppercase mb-4">Infrastructure & Persistence</div>
+                        <div class="grid grid-cols-3 gap-4">
+                            <div onclick="selectNode('db_pg')" id="node-db_pg" class="arch-node p-4 bg-slate-800 text-white rounded-lg shadow-md text-center">
+                                <div class="font-bold">PostgreSQL 16</div>
+                                <div class="text-xs text-slate-400">Structured Data</div>
+                            </div>
+                            <div onclick="selectNode('db_redis')" id="node-db_redis" class="arch-node p-4 bg-slate-800 text-white rounded-lg shadow-md text-center">
+                                <div class="font-bold">Redis 7</div>
+                                <div class="text-xs text-slate-400">Queues & Cache</div>
+                            </div>
+                            <div onclick="selectNode('db_minio')" id="node-db_minio" class="arch-node p-4 bg-slate-800 text-white rounded-lg shadow-md text-center">
+                                <div class="font-bold">MinIO S3</div>
+                                <div class="text-xs text-slate-400">Raw Artifacts</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Detail Panel (Sticky Sidebar) -->
+            <div class="lg:col-span-1">
+                <div class="bg-white rounded-xl shadow-lg border border-slate-200 p-6 sticky top-24 transition-all duration-300" id="detail-panel">
+                    <div class="flex items-center justify-between mb-4">
+                        <h3 id="detail-title" class="text-xl font-bold text-slate-900">Select a Component</h3>
+                        <span id="detail-badge" class="px-2 py-1 rounded text-xs font-bold bg-slate-100 text-slate-500 uppercase">System</span>
+                    </div>
+                    
+                    <p id="detail-desc" class="text-slate-600 text-sm leading-relaxed mb-6">
+                        Click on any block in the architecture diagram to view its specific responsibilities, technology stack, and data interactions.
+                    </p>
+
+                    <div class="space-y-4">
+                        <div>
+                            <h4 class="text-xs font-bold text-slate-400 uppercase mb-2">Key Responsibilities</h4>
+                            <ul id="detail-resps" class="space-y-2 text-sm text-slate-700">
+                                <li class="flex items-start gap-2">
+                                    <span class="text-blue-500 mt-1">•</span> Explore the diagram to populate this list.
+                                </li>
+                            </ul>
+                        </div>
+
+                        <div class="pt-4 border-t border-slate-100">
+                            <h4 class="text-xs font-bold text-slate-400 uppercase mb-2">Connected To</h4>
+                            <div id="detail-connects" class="flex flex-wrap gap-2">
+                                <span class="text-xs px-2 py-1 bg-slate-50 text-slate-400 rounded border border-slate-100">None</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Section 2: Component Statistics (Charts) -->
+        <div id="stack-section" class="bg-white rounded-xl shadow-sm border border-slate-200 p-8">
+            <div class="mb-6">
+                <h2 class="text-2xl font-bold text-slate-900">System Composition</h2>
+                <p class="text-slate-500">Breakdown of the technology stack and component types used in the platform.</p>
+            </div>
+            
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-8 items-center">
+                <div>
+                    <div class="chart-container">
+                        <canvas id="techStackChart"></canvas>
+                    </div>
+                    <p class="text-center text-xs text-slate-400 mt-2">Distribution of Core Technologies</p>
+                </div>
+                <div class="space-y-6">
+                     <div class="bg-blue-50 p-4 rounded-lg border border-blue-100">
+                        <h3 class="font-bold text-blue-900 mb-2">LLM-First Architecture</h3>
+                        <p class="text-sm text-blue-800">
+                            Unlike traditional systems, the core data extraction logic relies on <strong>Structured LLM Outputs</strong> (JSON Schema) rather than regex or hardcoded templates. This allows high adaptability to new receipt formats.
+                        </p>
+                    </div>
+                    <div class="bg-emerald-50 p-4 rounded-lg border border-emerald-100">
+                        <h3 class="font-bold text-emerald-900 mb-2">Event-Driven Ingestion</h3>
+                        <p class="text-sm text-emerald-800">
+                            The system handles asynchronous events from Android notifications and Gmail polling, utilizing <strong>Redis queues</strong> to buffer high throughput during bursts (e.g., end-of-month statements).
+                        </p>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Section 3: Data Flow Explanation -->
+        <div id="flow-section" class="grid grid-cols-1 md:grid-cols-3 gap-6">
+            <div class="md:col-span-3">
+                 <h2 class="text-2xl font-bold text-slate-900 mb-2">Core Data Pipelines</h2>
+                 <p class="text-slate-500 mb-6">Understanding how raw data is transformed into structured financial insights.</p>
+            </div>
+
+            <!-- Card 1: Ingestion -->
+            <div class="bg-white p-6 rounded-xl border border-slate-200 shadow-sm hover:shadow-md transition-shadow">
+                <div class="w-10 h-10 bg-amber-100 rounded-full flex items-center justify-center text-amber-600 mb-4 font-bold">1</div>
+                <h3 class="font-bold text-slate-900 mb-2">Ingestion & Routing</h3>
+                <p class="text-sm text-slate-600">
+                    Raw inputs (PDFs, HTML emails, SMS) arrive via API. They are hashed for deduplication and stored raw in <strong>MinIO</strong>. A job ID is pushed to Redis.
+                </p>
+            </div>
+
+            <!-- Card 2: Extraction -->
+            <div class="bg-white p-6 rounded-xl border border-slate-200 shadow-sm hover:shadow-md transition-shadow">
+                <div class="w-10 h-10 bg-blue-100 rounded-full flex items-center justify-center text-blue-600 mb-4 font-bold">2</div>
+                <h3 class="font-bold text-slate-900 mb-2">Intelligent Extraction</h3>
+                <p class="text-sm text-slate-600">
+                    The worker picks up the job. The <strong>LLM Extractor</strong> converts unstructured text into a strict JSON schema. Validators cross-check dates and amounts.
+                </p>
+            </div>
+
+            <!-- Card 3: Persistence -->
+            <div class="bg-white p-6 rounded-xl border border-slate-200 shadow-sm hover:shadow-md transition-shadow">
+                <div class="w-10 h-10 bg-purple-100 rounded-full flex items-center justify-center text-purple-600 mb-4 font-bold">3</div>
+                <h3 class="font-bold text-slate-900 mb-2">Normalization & Storage</h3>
+                <p class="text-sm text-slate-600">
+                    Merchant names are normalized (e.g., "Uber *Ride" -> "Uber"). The clean transaction is written to <strong>PostgreSQL</strong> for analytics and the Agent.
+                </p>
+            </div>
+        </div>
+
+    </main>
+
+    <footer class="bg-slate-900 text-slate-400 py-12 mt-12">
+        <div class="max-w-7xl mx-auto px-4 text-center">
+            <p class="mb-4 text-slate-500">Generated System Architecture Exploration SPA</p>
+            <div class="text-xs text-slate-600">
+                &copy; 2023 Internal Dev Platform. All systems operational.
+            </div>
+        </div>
+    </footer>
+
+    <script>
+        // Data Store for System Components
+        const systemData = {
+            'web': {
+                title: 'Next.js Web App',
+                type: 'Client / UI',
+                desc: 'The primary user interface for users to view financial dashboards, configure settings, and chat with the AI agent.',
+                tech: ['React', 'Next.js', 'Tailwind CSS'],
+                connects: ['API Gateway', 'MinIO Console']
+            },
+            'android': {
+                title: 'Android Companion',
+                type: 'Client / Mobile',
+                desc: 'A background service app that listens for bank SMS and push notifications to capture real-time spending.',
+                tech: ['Kotlin', 'Android SDK', 'NotificationListenerService'],
+                connects: ['Gmail API (Ingest)']
+            },
+            'minio_ui': {
+                title: 'MinIO Console',
+                type: 'Admin UI',
+                desc: 'Web interface for managing object storage buckets, inspecting raw uploaded files, and managing access policies.',
+                tech: ['Web', 'Port 9001'],
+                connects: ['MinIO S3']
+            },
+            'api_ingest': {
+                title: 'Ingestion Router',
+                type: 'API Gateway',
+                desc: 'Endpoints receiving raw data from Gmail polling, file uploads, and Android webhooks.',
+                tech: ['FastAPI', 'Python', 'OAuth'],
+                connects: ['Ingestion Service', 'Redis']
+            },
+            'api_tx': {
+                title: 'Transactions Router',
+                type: 'API Gateway',
+                desc: 'RESTful endpoints for CRUD operations on processed transactions and merchant data.',
+                tech: ['FastAPI', 'Pydantic'],
+                connects: ['PostgreSQL', 'Categorizer']
+            },
+            'api_agent': {
+                title: 'Agent Router',
+                type: 'API Gateway',
+                desc: 'Handles natural language queries from the UI, routing them to the LangGraph orchestration layer.',
+                tech: ['FastAPI', 'SSE (Streaming)'],
+                connects: ['Agent Orchestrator']
+            },
+            'svc_ingest': {
+                title: 'Ingestion Service',
+                type: 'Domain Service',
+                desc: 'Handles the logic of fetching emails from Gmail, validating uploads, and creating processing jobs.',
+                tech: ['Python', 'Google APIs'],
+                connects: ['MinIO', 'Redis', 'LLM Extractor']
+            },
+            'svc_extract': {
+                title: 'Extraction Pipeline',
+                type: 'Core Logic',
+                desc: 'The brain of the system. Uses LLMs to parse unstructured text into JSON, validates data integrity, and normalizes merchant names.',
+                tech: ['LangChain', 'OpenAI/LocalLLM', 'Pydantic'],
+                connects: ['Categorizer', 'MinIO']
+            },
+            'svc_agent': {
+                title: 'Agent Orchestrator',
+                type: 'AI Service',
+                desc: 'Uses LangGraph to decide whether to query the SQL database directly or use the Explainer tool to answer user questions.',
+                tech: ['LangGraph', 'LangChain', 'SQLAlchemy'],
+                connects: ['PostgreSQL', 'LLM Explainer']
+            },
+            'db_pg': {
+                title: 'PostgreSQL 16',
+                type: 'Primary Database',
+                desc: 'Relational storage for normalized transactions, merchant mappings, budgets, and audit logs.',
+                tech: ['PostgreSQL', 'SQL'],
+                connects: ['Analytics Service', 'Agent']
+            },
+            'db_redis': {
+                title: 'Redis 7',
+                type: 'Cache / Queue',
+                desc: 'Handles async job queues for ingestion and caches frequent analytic queries.',
+                tech: ['Redis', 'In-Memory'],
+                connects: ['Ingestion Service', 'Workers']
+            },
+            'db_minio': {
+                title: 'MinIO S3',
+                type: 'Object Storage',
+                desc: 'Stores raw artifacts (PDFs, HTML) and parsed JSON intermediate files. Compatible with AWS S3 API.',
+                tech: ['MinIO', 'Docker'],
+                connects: ['Ingestion Service', 'MinIO Console']
+            }
+        };
+
+        // DOM Elements
+        const detailTitle = document.getElementById('detail-title');
+        const detailBadge = document.getElementById('detail-badge');
+        const detailDesc = document.getElementById('detail-desc');
+        const detailResps = document.getElementById('detail-resps');
+        const detailConnects = document.getElementById('detail-connects');
+        const allNodes = document.querySelectorAll('.arch-node');
+
+        // Selection Logic
+        function selectNode(nodeId) {
+            // clear active states
+            allNodes.forEach(n => n.classList.remove('active'));
+            
+            // set active state
+            const element = document.getElementById(`node-${nodeId}`);
+            if(element) element.classList.add('active');
+
+            // update data
+            const data = systemData[nodeId];
+            if (!data) return;
+
+            // animate panel update
+            const panel = document.getElementById('detail-panel');
+            panel.classList.remove('opacity-100');
+            panel.classList.add('opacity-50');
+
+            setTimeout(() => {
+                detailTitle.textContent = data.title;
+                detailBadge.textContent = data.type;
+                detailBadge.className = `px-2 py-1 rounded text-xs font-bold uppercase ${getBadgeColor(data.type)}`;
+                detailDesc.textContent = data.desc;
+                
+                // Tech Stack / Responsibilities List
+                detailResps.innerHTML = data.tech.map(t => 
+                    `<li class="flex items-center gap-2">
+                        <span class="w-1.5 h-1.5 rounded-full bg-slate-400"></span> 
+                        ${t}
+                    </li>`
+                ).join('');
+
+                // Connections Tags
+                detailConnects.innerHTML = data.connects.map(c => 
+                    `<span class="text-xs px-2 py-1 bg-slate-100 text-slate-600 rounded border border-slate-200 font-medium">${c}</span>`
+                ).join('');
+
+                panel.classList.remove('opacity-50');
+                panel.classList.add('opacity-100');
+            }, 150);
+        }
+
+        // Helper for colors
+        function getBadgeColor(type) {
+            if (type.includes('Client')) return 'bg-blue-100 text-blue-700';
+            if (type.includes('API')) return 'bg-purple-100 text-purple-700';
+            if (type.includes('Service') || type.includes('Logic')) return 'bg-amber-100 text-amber-700';
+            if (type.includes('Data') || type.includes('Storage')) return 'bg-slate-100 text-slate-700';
+            return 'bg-gray-100 text-gray-700';
+        }
+
+        // Flow Simulation Logic
+        function simulateFlow(type) {
+            // Reset animations
+            allNodes.forEach(n => n.classList.remove('flow-active'));
+
+            let sequence = [];
+            
+            if (type === 'ingest') {
+                sequence = ['node-android', 'node-api_ingest', 'node-svc_ingest', 'node-db_minio', 'node-svc_extract', 'node-db_pg'];
+            } else if (type === 'agent') {
+                sequence = ['node-web', 'node-api_agent', 'node-svc_agent', 'node-db_pg'];
+            }
+
+            sequence.forEach((id, index) => {
+                const el = document.getElementById(id);
+                if (el) {
+                    setTimeout(() => {
+                        el.classList.add('flow-active');
+                        // Auto-select the node to show details as flow progresses
+                        if(index > 0) selectNode(id.replace('node-', ''));
+                    }, index * 800);
+                    
+                    // Remove class after animation
+                    setTimeout(() => {
+                        el.classList.remove('flow-active');
+                    }, (index * 800) + 2000);
+                }
+            });
+        }
+
+        function scrollToSection(id) {
+            document.getElementById(id).scrollIntoView({ behavior: 'smooth' });
+        }
+
+        // Initialize Chart.js
+        window.onload = function() {
+            // Default selection
+            selectNode('web');
+
+            const ctx = document.getElementById('techStackChart').getContext('2d');
+            new Chart(ctx, {
+                type: 'doughnut',
+                data: {
+                    labels: ['Python (Backend/AI)', 'TypeScript/React (UI)', 'SQL/Data', 'Infrastructure (Docker)'],
+                    datasets: [{
+                        data: [45, 25, 20, 10],
+                        backgroundColor: [
+                            '#f59e0b', // Amber (Python)
+                            '#3b82f6', // Blue (React)
+                            '#64748b', // Slate (Data)
+                            '#94a3b8'  // Light Slate (Infra)
+                        ],
+                        borderWidth: 0,
+                        hoverOffset: 4
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: {
+                            position: 'bottom',
+                            labels: {
+                                usePointStyle: true,
+                                padding: 20,
+                                font: { family: "'Inter', sans-serif", size: 12 }
+                            }
+                        },
+                        tooltip: {
+                            backgroundColor: '#1e293b',
+                            padding: 12,
+                            titleFont: { family: "'Inter', sans-serif", size: 13 },
+                            bodyFont: { family: "'Inter', sans-serif", size: 12 },
+                            displayColors: false
+                        }
+                    }
+                }
+            });
+        };
+    </script>
+</body>
+</html>
