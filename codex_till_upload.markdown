@@ -2630,3 +2630,416 @@ ingest_worker.py
 page.tsx
 +46
 -0
+
+db.py
++56
+-0
+
+    id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True)
+    account_type: Mapped[str] = mapped_column(String(32), default="credit_card")
+    artifact_id: Mapped[str | None] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("artifacts.id"), nullable=True
+    )
+    source: Mapped[str] = mapped_column(String(64))
+    object_key: Mapped[str] = mapped_column(String(512))
+    external_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+        UUID(as_uuid=False), ForeignKey("statements.id"), nullable=True
+    )
+    account_type: Mapped[str] = mapped_column(String(32), default="credit_card")
+    artifact_id: Mapped[str | None] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("artifacts.id"), nullable=True
+    )
+    transaction_hash: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    source: Mapped[str] = mapped_column(String(64))
+    object_key: Mapped[str] = mapped_column(String(512))
+    external_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    statement: Mapped["Statement"] = relationship(back_populates="emis")
+
+
+class Artifact(Base):
+    __tablename__ = "artifacts"
+
+    id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True)
+    file_hash: Mapped[str] = mapped_column(String(128), unique=True)
+    object_key: Mapped[str] = mapped_column(String(512))
+    source: Mapped[str] = mapped_column(String(64))
+    external_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    status: Mapped[str] = mapped_column(String(32), default="received")
+    created_at: Mapped[DateTime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[DateTime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class IngestEvent(Base):
+    __tablename__ = "ingest_events"
+
+    id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True)
+    artifact_id: Mapped[str | None] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("artifacts.id"), nullable=True
+    )
+    event_type: Mapped[str] = mapped_column(String(32))
+    message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[DateTime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+engine = create_async_engine(settings.database_url, echo=False)
+SessionLocal = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
+
+        await conn.execute(
+            text(
+                "ALTER TABLE statements "
+                "ADD COLUMN IF NOT EXISTS artifact_id UUID"
+            )
+        )
+        await conn.execute(
+            text(
+                "ALTER TABLE statements "
+                "ADD COLUMN IF NOT EXISTS period_start TIMESTAMPTZ"
+            )
+        )
+        )
+        await conn.execute(
+            text(
+                "ALTER TABLE transactions "
+                "ADD COLUMN IF NOT EXISTS artifact_id UUID"
+            )
+        )
+        await conn.execute(
+            text(
+                "ALTER TABLE transactions "
+                "ADD COLUMN IF NOT EXISTS transaction_hash VARCHAR(128)"
+            )
+        )
+        await conn.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS idx_transactions_hash "
+                "ON transactions (transaction_hash)"
+            )
+        )
+        await conn.execute(
+            text(
+                "UPDATE statements SET account_type='credit_card' "
+                "WHERE account_type IS NULL"
+            )
+main.py
++2
+-0
+from .routers.ingest import router as ingest_router
+from .routers.transactions import router as tx_router
+from .routers.statements import router as statements_router
+from .routers.ingest_events import router as ingest_events_router
+app.include_router(ingest_router, prefix="/v1/ingest", tags=["ingestion"])
+app.include_router(tx_router, prefix="/v1/transactions", tags=["transactions"])
+app.include_router(statements_router, prefix="/v1/statements", tags=["statements"])
+app.include_router(ingest_events_router, prefix="/v1/ingest-events", tags=["ingest-events"])
+ingest.py
++3
+-0
+import json
+import hashlib
+from datetime import datetime, timezone
+from fastapi import APIRouter, UploadFile, File, Form, HTTPException
+from pydantic import BaseModel
+    if not contents:
+        raise HTTPException(status_code=400, detail="Empty file upload")
+
+    file_hash = hashlib.sha256(contents).hexdigest()
+    suffix = Path(file.filename).suffix or ".bin"
+    job_id = str(uuid4())
+    object_key = f"raw/{source}/{job_id}{suffix}"
+
+
+    from datetime import datetime
+from typing import Optional
+
+from fastapi import APIRouter, Depends, Query
+from pydantic import BaseModel
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from ..db import Artifact, IngestEvent, get_session
+
+router = APIRouter()
+
+
+class IngestEventOut(BaseModel):
+    id: str
+    event_type: str
+    message: Optional[str] = None
+    created_at: datetime
+    artifact_id: Optional[str] = None
+    object_key: Optional[str] = None
+    file_hash: Optional[str] = None
+
+
+@router.get("", response_model=list[IngestEventOut])
+async def list_ingest_events(
+    session: AsyncSession = Depends(get_session),
+    limit: int = Query(25, ge=1, le=200),
+):
+    stmt = (
+        select(IngestEvent, Artifact)
+        .outerjoin(Artifact, Artifact.id == IngestEvent.artifact_id)
+        .order_by(IngestEvent.created_at.desc())
+        .limit(limit)
+    )
+    rows = (await session.execute(stmt)).all()
+    results = []
+    for event, artifact in rows:
+        results.append(
+            IngestEventOut(
+                id=event.id,
+                event_type=event.event_type,
+                message=event.message,
+                created_at=event.created_at,
+                artifact_id=event.artifact_id,
+                object_key=artifact.object_key if artifact else None,
+                file_hash=artifact.file_hash if artifact else None,
+            )
+        )
+    return results
+
+
+    import asyncio
+import hashlib
+import json
+import boto3
+import os
+from ..settings import settings
+from ..core.env import require_env
+from ..extract.pipeline import parse_document
+from ..db import EmiItem, Statement, Transaction, SessionLocal, init_db
+from sqlalchemy import delete, select
+
+from ..db import (
+    Artifact,
+    EmiItem,
+    IngestEvent,
+    Statement,
+    Transaction,
+    SessionLocal,
+    init_db,
+)
+
+QUEUE_KEY = "ingest:queue"
+
+        metadata = obj.get("Metadata", {})
+        print(f"[worker] downloaded {key} ({len(data)} bytes)")
+
+        file_hash = payload.get("file_hash") or hashlib.sha256(data).hexdigest()
+
+        extraction = parse_document(
+            data,
+            source=payload.get("source", "manual"),
+                f"closing_balance={_fmt_money(stmt.closing_balance)} "
+                f"emi_items={len(stmt.emi_items)}",
+            )
+        await _persist_extraction(payload, extraction)
+        await _persist_extraction(payload, extraction, file_hash)
+    except ClientError as exc:
+        print(f"[worker] failed to download {key}: {exc}")
+    except Exception as exc:  # pragma: no cover - debugging aid
+        print(f"[worker] extract error for {key}: {exc}")
+
+
+async def _persist_extraction(payload: dict, extraction):
+async def _persist_extraction(payload: dict, extraction, file_hash: str):
+    statement_id = None
+    async with SessionLocal() as session:
+        artifact = await _get_or_create_artifact(session, payload, file_hash)
+        await _log_event(
+            session,
+            artifact.id,
+            "ingest_received",
+            f"source={payload.get('source')} object_key={payload.get('object_key')}",
+        )
+        await _handle_reupload(session, artifact.id)
+
+        if extraction.statement:
+            statement_id = str(uuid4())
+            stmt = extraction.statement
+            statement = Statement(
+                id=statement_id,
+                account_type="credit_card",
+                artifact_id=artifact.id,
+                source=payload.get("source", "manual"),
+                object_key=payload["object_key"],
+                external_id=payload.get("external_id"),
+                )
+
+        for txn in extraction.txns:
+            txn_hash = _hash_txn(
+                txn.timestamp_iso.isoformat(),
+                txn.amount.value,
+                txn.amount.currency,
+                txn.merchant.normalized or txn.merchant.raw or "",
+            )
+            if await _is_duplicate(session, txn_hash):
+                await _log_event(
+                    session,
+                    artifact.id,
+                    "dedup_skip",
+                    f"txn_hash={txn_hash}",
+                )
+                continue
+            session.add(
+                Transaction(
+                    id=str(uuid4()),
+                    statement_id=statement_id,
+                    account_type="credit_card",
+                    artifact_id=artifact.id,
+                    transaction_hash=txn_hash,
+                    source=payload.get("source", "manual"),
+                    object_key=payload["object_key"],
+                    external_id=payload.get("external_id"),
+        return "n/a"
+    return dt.isoformat()
+
+
+async def _get_or_create_artifact(session, payload: dict, file_hash: str) -> Artifact:
+    stmt = select(Artifact).where(Artifact.file_hash == file_hash)
+    existing = (await session.execute(stmt)).scalars().first()
+    if existing:
+        existing.object_key = payload["object_key"]
+        existing.source = payload.get("source", "manual")
+        existing.external_id = payload.get("external_id")
+        existing.status = "reuploaded"
+        return existing
+    artifact = Artifact(
+        id=str(uuid4()),
+        file_hash=file_hash,
+        object_key=payload["object_key"],
+        source=payload.get("source", "manual"),
+        external_id=payload.get("external_id"),
+        status="received",
+    )
+    session.add(artifact)
+    return artifact
+
+
+async def _handle_reupload(session, artifact_id: str) -> None:
+    stmt = select(Transaction).where(Transaction.artifact_id == artifact_id)
+    existing_txn = (await session.execute(stmt)).scalars().first()
+    if not existing_txn:
+        return
+    await session.execute(delete(EmiItem).where(EmiItem.statement_id.in_(
+        select(Statement.id).where(Statement.artifact_id == artifact_id)
+    )))
+    await session.execute(delete(Transaction).where(Transaction.artifact_id == artifact_id))
+    await session.execute(delete(Statement).where(Statement.artifact_id == artifact_id))
+    await _log_event(session, artifact_id, "reupload_reset", "Cleared existing data for reupload")
+
+
+def _hash_txn(ts: str, amount: float, currency: str, merchant: str) -> str:
+    base = f"{ts}|{amount:.2f}|{currency}|{merchant.lower()}"
+    return hashlib.sha256(base.encode("utf-8")).hexdigest()
+
+
+async def _is_duplicate(session, txn_hash: str) -> bool:
+    stmt = select(Transaction.id).where(Transaction.transaction_hash == txn_hash)
+    exists = (await session.execute(stmt)).scalars().first()
+    return bool(exists)
+
+
+async def _log_event(session, artifact_id: str | None, event_type: str, message: str) -> None:
+    session.add(
+        IngestEvent(
+            id=str(uuid4()),
+            artifact_id=artifact_id,
+            event_type=event_type,
+            message=message,
+        )
+    )
+
+if __name__ == "__main__":
+    from dotenv import load_dotenv
+    load_dotenv()
+
+
+     statement_issuer?: string | null;
+  statement_instrument?: string | null;
+};
+type IngestEvent = {
+  id: string;
+  event_type: string;
+  message?: string | null;
+  created_at: string;
+  object_key?: string | null;
+};
+
+const API_BASE = "http://127.0.0.1:8000/v1";
+
+  const [uploading, setUploading] = useState(false);
+  const [uploadStatus, setUploadStatus] = useState<string | null>(null);
+  const [uploadError, setUploadError] = useState<string | null>(null);
+  const [events, setEvents] = useState<IngestEvent[]>([]);
+
+  const statementRange = useMemo(
+    () => formatRange(monthly.map((m) => m.month), "All time"),
+          creditsRes,
+          merchantsRes,
+          categoriesRes,
+          eventsRes,
+        ] = await Promise.all([
+          fetch(`${API_BASE}/statements/summary/totals${query}`),
+          fetch(`${API_BASE}/statements/summary/by-month${query}`),
+          fetch(`${API_BASE}/statements/summary/credits-debits-by-month${query}`),
+          fetch(`${API_BASE}/statements/summary/top-merchants-by-month${query}`),
+          fetch(`${API_BASE}/statements/summary/categories-by-month${query}`),
+          fetch(`${API_BASE}/ingest-events?limit=20`),
+        ]);
+
+        if (!totalsRes.ok) throw new Error("Failed to load totals");
+        const creditsJson = await creditsRes.json();
+        const merchantsJson = await merchantsRes.json();
+        const categoriesJson = await categoriesRes.json();
+        const eventsJson = await eventsRes.json();
+
+        if (!mounted) return;
+        setTotals(totalsJson);
+        setCreditsDebits(creditsJson);
+        setTopMerchants(merchantsJson);
+        setCategories(categoriesJson);
+        setEvents(eventsJson);
+      } catch (err) {
+        if (!mounted) return;
+        setError(err instanceof Error ? err.message : "Unknown error");
+        </section>
+      )}
+
+      <section className="panel">
+        <div className="panel-header">
+          <div>
+            <h2>Ingestion history</h2>
+            <span className="subtle">Dedup, reuploads, and processing events</span>
+          </div>
+          <span className="pill">Recent 20</span>
+        </div>
+        <div className="rows">
+          {events.map((event) => (
+            <div key={event.id} className="row">
+              <div className="month">
+                {new Date(event.created_at).toLocaleString("en-US", {
+                  day: "2-digit",
+                  month: "short",
+                  year: "numeric",
+                  hour: "2-digit",
+                  minute: "2-digit",
+                })}
+              </div>
+              <div className="row-item">
+                <span>Event</span>
+                <strong>{event.event_type}</strong>
+              </div>
+              <div className="row-item">
+                <span>Details</span>
+                <strong>{event.message || "—"}</strong>
+              </div>
+            </div>
+          ))}
+          {!events.length && <p className="empty">No ingest events yet.</p>}
+        </div>
+      </section>
+
+      <section className="grid">
+        <article className="card reveal">
+          <h3>Total due</h3>
