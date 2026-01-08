@@ -3043,3 +3043,135 @@ const API_BASE = "http://127.0.0.1:8000/v1";
       <section className="grid">
         <article className="card reveal">
           <h3>Total due</h3>
+
+
+there is some prob with the upload even before the UI when the upload is done for the first time althohgh the fastapi server picks up but the ingetion worker picks up only when reuploaded a second file onwards . check and fix
+
+
+I added a startup drain so the worker processes any jobs already in Redis before it starts blocking on BRPOP. This fixes the “first upload doesn’t get picked up until second upload” behavior.
+
+Updated: ingest_worker.py (line 1).
+
+Now restart the worker with:
+
+cd /Users/anubhabduttachoudhury/AI/MVP_one/FinanceAgentMVP/finance-agent-mvp/apps/server
+source .venv/bin/activate
+set -a && source .env && set +a
+python -m app.workers.ingest_worker
+Any previously queued jobs will be processed immediately, then it will keep listening. If it still skips the first upload, tell me what redis-cli LLEN ingest:queue shows right after the upload.
+
+1 file changed
+Undo
+
+Review
+ingest_worker.py
++7
+-0
+    client = redis.from_url(settings.redis_url, decode_responses=True)
+    print("[worker] listening for jobs on", QUEUE_KEY)
+    while True:
+        job_raw = await client.lpop(QUEUE_KEY)
+        if not job_raw:
+            break
+        job = json.loads(job_raw)
+        job["received_at"] = datetime.utcnow().isoformat()
+        await process_job(job, s3_client, bucket)
+    while True:
+        _, job_raw = await client.brpop(QUEUE_KEY)
+        job = json.loads(job_raw)
+        job["received_at"] = datetime.utcnow().isoformat()
+User attachment
+User attachment
+even after the upload check the 2 ss the ingestion queue is still empty . The issue is not fixed yet
+
+
+The screenshots show no POST hitting the FastAPI logs (only GETs). That means the upload request isn’t reaching the server at all. Most likely it’s blocked by CORS when the frontend runs on port 3001.
+
+I fixed CORS to allow both 3000 and 3001:
+
+main.py (line 1) now includes http://localhost:3001.
+Next steps:
+
+Restart FastAPI:
+cd /Users/anubhabduttachoudhury/AI/MVP_one/FinanceAgentMVP/finance-agent-mvp/apps/server
+source .venv/bin/activate
+set -a && source .env && set +a
+uvicorn app.main:app --reload
+Retry the upload in the UI and watch the FastAPI terminal. You should now see a POST /v1/ingest/upload log.
+If you still don’t see the POST, check the browser devtools Network tab to confirm the upload request and status.
+
+1 file changed
+Undo
+
+Review
+main.py
++1
+-1
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:3000"],
+    allow_origins=["http://localhost:3000", "http://localhost:3001"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+User attachment
+User attachment
+the fast ss is that of the fast api, the second is that of the ingest queue still not picking up, notice that the fast api did trigger the post still ingest queue us empty
+
+
+I added instrumentation so you can see if the job is actually enqueued:
+
+/v1/ingest/upload now returns queue_length (the Redis list size after the push).
+The UI upload status shows Queue <n> so you can confirm it’s not zero.
+Updated files:
+
+ingest.py (line 1)
+page.tsx (line 1)
+Next steps:
+
+Restart FastAPI + Next.js.
+Upload a file again.
+Check the UI upload toast: if it says Queue 1 (or higher), the push happened.
+If it still shows Queue 0, the push didn’t hit Redis. If it shows Queue 1 but the worker doesn’t pick it up, then the worker is connected to a different Redis instance. In that case, share the upload response (it now includes queue_length) and I’ll pinpoint the mismatch.
+
+2 files changed
++4
+-2
+Undo
+
+Review
+ingest.py
++3
+-1
+    object_key: str
+    source: str
+    size_bytes: int
+    queue_length: int
+
+@router.post("/upload", response_model=IngestResponse)
+async def upload_receipt(
+        "uploaded_at": datetime.now(timezone.utc).isoformat(),
+    }
+    try:
+        await redis_client.lpush("ingest:queue", json.dumps(job_payload))
+        queue_length = await redis_client.lpush("ingest:queue", json.dumps(job_payload))
+    except redis.RedisError as exc:
+        raise HTTPException(status_code=502, detail=f"Queue error: {exc}") from exc
+
+        object_key=object_key,
+        source=source,
+        size_bytes=len(contents),
+        queue_length=queue_length,
+    )
+page.tsx
++1
+-1
+      });
+      if (!res.ok) throw new Error("Upload failed");
+      const json = await res.json();
+      setUploadStatus(`Uploaded. Job ${json.job_id}`);
+      setUploadStatus(`Uploaded. Job ${json.job_id} • Queue ${json.queue_length}`);
+    } catch (err) {
+      setUploadError(err instanceof Error ? err.message : "Upload failed");
+    } finally {
